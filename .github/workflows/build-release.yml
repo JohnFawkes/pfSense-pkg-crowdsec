@@ -1,0 +1,142 @@
+name: Build release archives
+
+# Builds crowdsec, crowdsec-firewall-bouncer (from the FreeBSD ports tree) and
+# pfSense-pkg-crowdsec (from this repo) inside FreeBSD VMs, and publishes
+# freebsd-<major>-<arch>.tar archives in the layout expected by
+# install-crowdsec.sh.
+#
+# Tag format: v<pfSense-pkg-crowdsec version>-<crowdsec version>-<bouncer build>
+# e.g. v0.1.8-1.8.1-34
+
+on:
+  workflow_dispatch:
+    inputs:
+      ports_ref:
+        description: "FreeBSD ports tree branch/tag/commit to build from"
+        default: "main"
+      expected_crowdsec_version:
+        description: "Fail if the ports tree does not provide this crowdsec version (empty = don't check)"
+        default: "1.8.1"
+      prerelease:
+        description: "Publish as a pre-release"
+        type: boolean
+        default: true
+      publish:
+        description: "Create the GitHub release (otherwise only upload workflow artifacts)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: FreeBSD ${{ matrix.release }} ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release: "15.0"
+            arch: amd64
+          - release: "14.3"
+            arch: amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build packages in FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        env:
+          PORTS_REF: ${{ inputs.ports_ref }}
+          EXPECTED_CROWDSEC: ${{ inputs.expected_crowdsec_version }}
+          FBSD_RELEASE: ${{ matrix.release }}
+          FBSD_ARCH: ${{ matrix.arch }}
+        with:
+          release: ${{ matrix.release }}
+          arch: ${{ matrix.arch }}
+          envs: "PORTS_REF EXPECTED_CROWDSEC FBSD_RELEASE FBSD_ARCH"
+          usesh: true
+          mem: 8192
+          prepare: |
+            pkg install -y git gmake
+          run: |
+            set -eux
+            WS="$PWD"
+            export PACKAGES=/tmp/packages
+            mkdir -p "$PACKAGES/All" "$WS/out"
+
+            # Ports tree
+            rm -rf /usr/ports
+            git clone --depth 1 --branch "$PORTS_REF" https://git.freebsd.org/ports.git /usr/ports \
+              || { git clone https://git.freebsd.org/ports.git /usr/ports && git -C /usr/ports checkout "$PORTS_REF"; }
+
+            # Our package goes into the tree like any other port
+            cp -R "$WS/security/pfSense-pkg-crowdsec" /usr/ports/security/
+
+            CS_VER=$(make -C /usr/ports/security/crowdsec -V PKGVERSION)
+            BN_VER=$(make -C /usr/ports/security/crowdsec-firewall-bouncer -V PKGVERSION)
+            PF_VER=$(make -C /usr/ports/security/pfSense-pkg-crowdsec -V PKGVERSION)
+            echo "crowdsec=$CS_VER bouncer=$BN_VER pfSense-pkg=$PF_VER"
+
+            if [ -n "$EXPECTED_CROWDSEC" ] && [ "${CS_VER%%_*}" != "$EXPECTED_CROWDSEC" ]; then
+              echo "ports tree provides crowdsec $CS_VER, expected $EXPECTED_CROWDSEC" >&2
+              exit 1
+            fi
+
+            # Build in dependency order; install each so the next can depend on it
+            for port in crowdsec crowdsec-firewall-bouncer pfSense-pkg-crowdsec; do
+              cd "/usr/ports/security/$port"
+              make BATCH=yes install-missing-packages
+              make BATCH=yes package
+              pkg add -f "$(find "/usr/ports/security/$port" "$PACKAGES" -name "$port-[0-9]*.pkg" | head -n 1)"
+            done
+
+            # Collect the three packages (never abseil/re2: pfSense manages those)
+            for port in crowdsec crowdsec-firewall-bouncer pfSense-pkg-crowdsec; do
+              f=$(find "/usr/ports/security/$port" "$PACKAGES" -name "$port-[0-9]*.pkg" | head -n 1)
+              test -n "$f"
+              cp "$f" "$WS/out/"
+            done
+            cd "$WS/out"
+            MAJOR=${FBSD_RELEASE%%.*}
+            tar -czf "freebsd-$MAJOR-$FBSD_ARCH.tar" ./*.pkg
+            rm -f ./*.pkg
+            printf 'pfsense_pkg=%s\ncrowdsec=%s\nbouncer=%s\n' "$PF_VER" "$CS_VER" "$BN_VER" > versions.txt
+            ls -l
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-${{ matrix.release }}-${{ matrix.arch }}
+          path: out/
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Compute tag and check version consistency
+        id: tag
+        run: |
+          set -eu
+          # every build must have used the same package versions
+          [ "$(cat artifacts/*/versions.txt | sort -u | wc -l)" -eq 3 ] || { echo "versions differ between builds" >&2; cat artifacts/*/versions.txt; exit 1; }
+          . "$(ls artifacts/*/versions.txt | head -n 1)"
+          # bouncer version looks like 0.0.34 or 0.0.34_1: use the last number as build id
+          BN=${bouncer%%_*}; BN=${BN##*.}
+          echo "tag=v${pfsense_pkg%%_*}-${crowdsec%%_*}-${BN}" >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          prerelease: ${{ inputs.prerelease }}
+          files: artifacts/*/freebsd-*.tar
