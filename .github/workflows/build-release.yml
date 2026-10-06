@@ -64,6 +64,9 @@ jobs:
             set -eux
             WS="$PWD"
             export PACKAGES=/tmp/packages
+            # pfSense bases lag behind FreeBSD's support window, so the ports
+            # tree's "unsupported release" check must not block the build
+            export ALLOW_UNSUPPORTED_SYSTEM=yes
             mkdir -p "$PACKAGES/All" "$WS/out"
 
             # Ports tree
