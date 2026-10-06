@@ -21,6 +21,10 @@ on:
         description: "Publish as a pre-release"
         type: boolean
         default: true
+      build_freebsd16_selfhosted:
+        description: "Also build FreeBSD 16 amd64 on the self-hosted runner (label: freebsd-vm). Untick if the runner is offline."
+        type: boolean
+        default: true
       publish:
         description: "Create the GitHub release (otherwise only upload workflow artifacts)"
         type: boolean
@@ -51,10 +55,8 @@ jobs:
           - release: "14.3"
             arch: aarch64
           # FreeBSD 16 is CURRENT, and the action's image for it may be missing
-          # or flaky: these jobs must not block the release.
-          - release: "16.0"
-            arch: amd64
-            experimental: true
+          # or flaky: this job must not block the release. 16 amd64 is built by
+          # the build-freebsd16-selfhosted job instead.
           - release: "16.0"
             arch: aarch64
             experimental: true
@@ -77,54 +79,7 @@ jobs:
           prepare: |
             pkg install -y git gmake
           run: |
-            set -eux
-            WS="$PWD"
-            export PACKAGES=/tmp/packages
-            # pfSense bases lag behind FreeBSD's support window, so the ports
-            # tree's "unsupported release" check must not block the build
-            export ALLOW_UNSUPPORTED_SYSTEM=yes
-            mkdir -p "$PACKAGES/All" "$WS/out"
-
-            # Ports tree
-            # /usr/ports can be a mount point in the VM image: empty it, don't remove it
-            mkdir -p /usr/ports
-            find /usr/ports -mindepth 1 -delete
-            git clone --depth 1 --branch "$PORTS_REF" https://git.freebsd.org/ports.git /usr/ports \
-              || { find /usr/ports -mindepth 1 -delete; git clone https://git.freebsd.org/ports.git /usr/ports && git -C /usr/ports checkout "$PORTS_REF"; }
-
-            # Our package goes into the tree like any other port
-            cp -R "$WS/security/pfSense-pkg-crowdsec" /usr/ports/security/
-
-            CS_VER=$(make -C /usr/ports/security/crowdsec -V PKGVERSION)
-            BN_VER=$(make -C /usr/ports/security/crowdsec-firewall-bouncer -V PKGVERSION)
-            PF_VER=$(make -C /usr/ports/security/pfSense-pkg-crowdsec -V PKGVERSION)
-            echo "crowdsec=$CS_VER bouncer=$BN_VER pfSense-pkg=$PF_VER"
-
-            if [ -n "$EXPECTED_CROWDSEC" ] && [ "${CS_VER%%_*}" != "$EXPECTED_CROWDSEC" ]; then
-              echo "ports tree provides crowdsec $CS_VER, expected $EXPECTED_CROWDSEC" >&2
-              exit 1
-            fi
-
-            # Build in dependency order; install each so the next can depend on it
-            for port in crowdsec crowdsec-firewall-bouncer pfSense-pkg-crowdsec; do
-              cd "/usr/ports/security/$port"
-              make BATCH=yes install-missing-packages
-              make BATCH=yes package
-              pkg add -f "$(find "/usr/ports/security/$port" "$PACKAGES" -name "$port-[0-9]*.pkg" | head -n 1)"
-            done
-
-            # Collect the three packages (never abseil/re2: pfSense manages those)
-            for port in crowdsec crowdsec-firewall-bouncer pfSense-pkg-crowdsec; do
-              f=$(find "/usr/ports/security/$port" "$PACKAGES" -name "$port-[0-9]*.pkg" | head -n 1)
-              test -n "$f"
-              cp "$f" "$WS/out/"
-            done
-            cd "$WS/out"
-            MAJOR=${FBSD_RELEASE%%.*}
-            tar -czf "freebsd-$MAJOR-$FBSD_ARCH.tar" ./*.pkg
-            rm -f ./*.pkg
-            printf 'pfsense_pkg=%s\ncrowdsec=%s\nbouncer=%s\n' "$PF_VER" "$CS_VER" "$BN_VER" > versions.txt
-            ls -l
+            sh scripts/build-packages.sh
 
       - uses: actions/upload-artifact@v4
         with:
@@ -132,10 +87,36 @@ jobs:
           path: out/
           if-no-files-found: error
 
+  build-freebsd16-selfhosted:
+    name: FreeBSD 16.0 amd64 (self-hosted)
+    if: ${{ inputs.build_freebsd16_selfhosted }}
+    runs-on: [self-hosted, linux, freebsd-vm]
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build packages in a QEMU FreeBSD 16 VM
+        env:
+          # Optional repository variable; the script defaults to
+          # ~/FreeBSD-16.0-CURRENT-amd64-BASIC-CLOUDINIT-ufs.qcow2 on the runner.
+          FREEBSD_IMAGE: ${{ vars.FREEBSD16_IMAGE }}
+          PORTS_REF: ${{ inputs.ports_ref }}
+          EXPECTED_CROWDSEC: ${{ inputs.expected_crowdsec_version }}
+          FBSD_RELEASE: "16.0"
+          FBSD_ARCH: amd64
+        run: scripts/run-in-freebsd-vm.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-16.0-amd64
+          path: out/
+          if-no-files-found: error
+
   release:
     name: Publish release
-    needs: build
-    if: ${{ inputs.publish }}
+    needs: [build, build-freebsd16-selfhosted]
+    # the self-hosted job is skipped when its input is unticked; a failure blocks the release
+    if: ${{ !cancelled() && inputs.publish && needs.build.result == 'success' && (needs.build-freebsd16-selfhosted.result == 'success' || needs.build-freebsd16-selfhosted.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
