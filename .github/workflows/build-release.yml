@@ -67,9 +67,11 @@ jobs:
             mkdir -p "$PACKAGES/All" "$WS/out"
 
             # Ports tree
-            rm -rf /usr/ports
+            # /usr/ports can be a mount point in the VM image: empty it, don't remove it
+            mkdir -p /usr/ports
+            find /usr/ports -mindepth 1 -delete
             git clone --depth 1 --branch "$PORTS_REF" https://git.freebsd.org/ports.git /usr/ports \
-              || { git clone https://git.freebsd.org/ports.git /usr/ports && git -C /usr/ports checkout "$PORTS_REF"; }
+              || { find /usr/ports -mindepth 1 -delete; git clone https://git.freebsd.org/ports.git /usr/ports && git -C /usr/ports checkout "$PORTS_REF"; }
 
             # Our package goes into the tree like any other port
             cp -R "$WS/security/pfSense-pkg-crowdsec" /usr/ports/security/
