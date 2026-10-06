@@ -33,15 +33,22 @@ jobs:
   build:
     name: FreeBSD ${{ matrix.release }} ${{ matrix.arch }}
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
         include:
+          # vmactions/freebsd-vm has no FreeBSD 16 (CURRENT) and no armv7 images,
+          # so freebsd-16-* and freebsd-*-armv7 archives are not built here.
+          # aarch64 runs under QEMU emulation and is much slower than amd64.
           - release: "15.0"
             arch: amd64
+          - release: "15.0"
+            arch: aarch64
           - release: "14.3"
             arch: amd64
+          - release: "14.3"
+            arch: aarch64
     steps:
       - uses: actions/checkout@v4
 
