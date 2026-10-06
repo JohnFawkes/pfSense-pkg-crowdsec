@@ -1,12 +1,13 @@
-name: Build release archives
+name: Build release archives (aarch64, slow)
 
-# Builds crowdsec, crowdsec-firewall-bouncer (from the FreeBSD ports tree) and
-# pfSense-pkg-crowdsec (from this repo) inside FreeBSD VMs, and publishes
-# freebsd-<major>-<arch>.tar archives in the layout expected by
-# install-crowdsec.sh.
+# aarch64 counterpart of build-release.yml. Everything here runs under QEMU
+# emulation (the runners are x86), so it is slow: expect many hours. Kept in its
+# own workflow so the normal amd64 release is not held up by it.
 #
-# Tag format: v<pfSense-pkg-crowdsec version>-<crowdsec version>-<bouncer build>
-# e.g. v0.1.8-1.8.1-34
+# With `publish`, the archives are attached to the release with the same tag
+# scheme as build-release.yml (v<pkg>-<crowdsec>-<bouncer build>), creating it
+# if it does not exist yet. Run build-release.yml first if you want both sets in
+# one release; the tag matches only when both builds saw the same versions.
 
 on:
   workflow_dispatch:
@@ -22,7 +23,7 @@ on:
         type: boolean
         default: true
       build_freebsd16_selfhosted:
-        description: "Also build FreeBSD 16 amd64 on the self-hosted runner (label: freebsd-vm). Untick if the runner is offline."
+        description: "Also build FreeBSD 16 aarch64 on the self-hosted runner (label: freebsd-vm). Untick if the runner is offline."
         type: boolean
         default: true
       publish:
@@ -40,15 +41,13 @@ jobs:
     timeout-minutes: 360
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
-          # vmactions/freebsd-vm has no FreeBSD 16 image, so 16 is built by the
-          # self-hosted job below. aarch64 lives in build-release-aarch64.yml
-          # (emulated, slow); armv7 is not built.
           - release: "15.0"
-            arch: amd64
+            arch: aarch64
           - release: "14.3"
-            arch: amd64
+            arch: aarch64
     steps:
       - uses: actions/checkout@v4
 
@@ -77,27 +76,30 @@ jobs:
           if-no-files-found: error
 
   build-freebsd16-selfhosted:
-    name: FreeBSD 16.0 amd64 (self-hosted)
+    name: FreeBSD 16.0 aarch64 (self-hosted)
     if: ${{ inputs.build_freebsd16_selfhosted }}
     runs-on: [self-hosted, linux, freebsd-vm]
-    timeout-minutes: 360
+    # emulated on an x86 host: this can take a day or more
+    timeout-minutes: 2880
     steps:
       - uses: actions/checkout@v4
 
       - name: Build packages in a QEMU FreeBSD 16 VM
         env:
           # Optional repository variables; the script defaults to
-          # ~/FreeBSD-16.0-CURRENT-amd64-BASIC-CLOUDINIT-ufs.qcow2.
-          FREEBSD_IMAGE: ${{ vars.FREEBSD16_IMAGE }}
+          # ~/FreeBSD-16.0-CURRENT-arm64-aarch64-BASIC-CLOUDINIT-ufs.qcow2.
+          FREEBSD_IMAGE: ${{ vars.FREEBSD16_IMAGE_AARCH64 }}
           PORTS_REF: ${{ inputs.ports_ref }}
           EXPECTED_CROWDSEC: ${{ inputs.expected_crowdsec_version }}
           FBSD_RELEASE: "16.0"
-          FBSD_ARCH: amd64
+          FBSD_ARCH: aarch64
+          VM_CPUS: ${{ vars.FREEBSD_VM_CPUS || '4' }}
+          VM_MEM: ${{ vars.FREEBSD_VM_MEM || '8192' }}
         run: scripts/run-in-freebsd-vm.sh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: freebsd-16.0-amd64
+          name: freebsd-16.0-aarch64
           path: out/
           if-no-files-found: error
 
