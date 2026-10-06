@@ -22,7 +22,7 @@ on:
         type: boolean
         default: true
       build_freebsd16_selfhosted:
-        description: "Also build FreeBSD 16 amd64 on the self-hosted runner (label: freebsd-vm). Untick if the runner is offline."
+        description: "Also build FreeBSD 16 (amd64 + aarch64) on the self-hosted runner (label: freebsd-vm). Untick if the runner is offline."
         type: boolean
         default: true
       publish:
@@ -38,13 +38,13 @@ jobs:
     name: FreeBSD ${{ matrix.release }} ${{ matrix.arch }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # vmactions/freebsd-vm has no armv7 images, so freebsd-*-armv7 archives
-          # are not built here. aarch64 runs under QEMU emulation and is much
+          # vmactions/freebsd-vm has no armv7 images or FreeBSD 16 image, so
+          # freebsd-*-armv7 archives are not built and 16 is built by the
+          # self-hosted job below. aarch64 runs under QEMU emulation and is much
           # slower than amd64.
           - release: "15.0"
             arch: amd64
@@ -54,12 +54,6 @@ jobs:
             arch: amd64
           - release: "14.3"
             arch: aarch64
-          # FreeBSD 16 is CURRENT, and the action's image for it may be missing
-          # or flaky: this job must not block the release. 16 amd64 is built by
-          # the build-freebsd16-selfhosted job instead.
-          - release: "16.0"
-            arch: aarch64
-            experimental: true
     steps:
       - uses: actions/checkout@v4
 
@@ -88,27 +82,34 @@ jobs:
           if-no-files-found: error
 
   build-freebsd16-selfhosted:
-    name: FreeBSD 16.0 amd64 (self-hosted)
+    name: FreeBSD 16.0 ${{ matrix.arch }} (self-hosted)
     if: ${{ inputs.build_freebsd16_selfhosted }}
     runs-on: [self-hosted, linux, freebsd-vm]
-    timeout-minutes: 360
+    timeout-minutes: 720
+    strategy:
+      fail-fast: false
+      # same runner label for both: with one runner they run one after the other.
+      # aarch64 is emulated (slow) unless the runner host is arm64.
+      max-parallel: 1
+      matrix:
+        arch: [amd64, aarch64]
     steps:
       - uses: actions/checkout@v4
 
       - name: Build packages in a QEMU FreeBSD 16 VM
         env:
-          # Optional repository variable; the script defaults to
-          # ~/FreeBSD-16.0-CURRENT-amd64-BASIC-CLOUDINIT-ufs.qcow2 on the runner.
-          FREEBSD_IMAGE: ${{ vars.FREEBSD16_IMAGE }}
+          # Optional repository variables; the script defaults to
+          # ~/FreeBSD-16.0-CURRENT-<amd64|arm64-aarch64>-BASIC-CLOUDINIT-ufs.qcow2.
+          FREEBSD_IMAGE: ${{ matrix.arch == 'amd64' && vars.FREEBSD16_IMAGE || vars.FREEBSD16_IMAGE_AARCH64 }}
           PORTS_REF: ${{ inputs.ports_ref }}
           EXPECTED_CROWDSEC: ${{ inputs.expected_crowdsec_version }}
           FBSD_RELEASE: "16.0"
-          FBSD_ARCH: amd64
+          FBSD_ARCH: ${{ matrix.arch }}
         run: scripts/run-in-freebsd-vm.sh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: freebsd-16.0-amd64
+          name: freebsd-16.0-${{ matrix.arch }}
           path: out/
           if-no-files-found: error
 
