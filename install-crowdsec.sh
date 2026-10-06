@@ -67,7 +67,7 @@ terminate_services() {
 
 # Set variables used by get_archive
 set_vars() {
-    REPO_OWNER="crowdsecurity"
+    REPO_OWNER="JohnFawkes"
     REPO_NAME="pfSense-pkg-crowdsec"
 
     # Fetch the latest stable release, unless a specific tag is requested
