@@ -34,13 +34,14 @@ jobs:
     name: FreeBSD ${{ matrix.release }} ${{ matrix.arch }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # vmactions/freebsd-vm has no FreeBSD 16 (CURRENT) and no armv7 images,
-          # so freebsd-16-* and freebsd-*-armv7 archives are not built here.
-          # aarch64 runs under QEMU emulation and is much slower than amd64.
+          # vmactions/freebsd-vm has no armv7 images, so freebsd-*-armv7 archives
+          # are not built here. aarch64 runs under QEMU emulation and is much
+          # slower than amd64.
           - release: "15.0"
             arch: amd64
           - release: "15.0"
@@ -49,6 +50,14 @@ jobs:
             arch: amd64
           - release: "14.3"
             arch: aarch64
+          # FreeBSD 16 is CURRENT, and the action's image for it may be missing
+          # or flaky: these jobs must not block the release.
+          - release: "16.0"
+            arch: amd64
+            experimental: true
+          - release: "16.0"
+            arch: aarch64
+            experimental: true
     steps:
       - uses: actions/checkout@v4
 
