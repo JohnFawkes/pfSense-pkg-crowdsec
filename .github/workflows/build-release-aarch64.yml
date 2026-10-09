@@ -30,6 +30,9 @@ on:
         description: "Create the GitHub release (otherwise only upload workflow artifacts)"
         type: boolean
         default: true
+      release_tag:
+        description: "Attach the archives to this EXISTING release tag (e.g. v0.1.9-1.8.1-38) instead of computing one; its name and pre-release flag are left alone"
+        default: ""
 
 permissions:
   contents: read
@@ -118,18 +121,29 @@ jobs:
 
       - name: Compute tag and check version consistency
         id: tag
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           # every build must have used the same package versions
           [ "$(cat artifacts/*/versions.txt | sort -u | wc -l)" -eq 3 ] || { echo "versions differ between builds" >&2; cat artifacts/*/versions.txt; exit 1; }
+          if [ -n "$RELEASE_TAG" ]; then
+            # attach to an existing release; refuse to create a new one by typo
+            gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null
+            echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           . "$(ls artifacts/*/versions.txt | head -n 1)"
           # bouncer version looks like 0.0.34 or 0.0.34_1: use the last number as build id
           BN=${bouncer%%_*}; BN=${BN##*.}
           echo "tag=v${pfsense_pkg%%_*}-${crowdsec%%_*}-${BN}" >> "$GITHUB_OUTPUT"
 
+      # With release_tag, name and prerelease are left empty so softprops keeps
+      # the existing release's values instead of overwriting them.
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.tag }}
-          prerelease: ${{ inputs.prerelease }}
+          name: ${{ inputs.release_tag == '' && steps.tag.outputs.tag || '' }}
+          prerelease: ${{ inputs.release_tag == '' && inputs.prerelease || '' }}
           files: artifacts/*/freebsd-*.tar
