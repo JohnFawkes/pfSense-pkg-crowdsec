@@ -30,6 +30,9 @@ on:
         description: "Create the GitHub release (otherwise only upload workflow artifacts)"
         type: boolean
         default: true
+      reuse_run_id:
+        description: "Skip the builds and publish the artifacts of this earlier run instead (needs release_tag)"
+        default: ""
       release_tag:
         description: "Attach the archives to this EXISTING release tag (e.g. v0.1.9-1.8.1-38) instead of computing one; its name and pre-release flag are left alone"
         default: ""
@@ -40,6 +43,7 @@ permissions:
 jobs:
   build:
     name: FreeBSD ${{ matrix.release }} ${{ matrix.arch }}
+    if: ${{ inputs.reuse_run_id == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
@@ -80,7 +84,7 @@ jobs:
 
   build-freebsd16-selfhosted:
     name: FreeBSD 16.0 aarch64 (self-hosted)
-    if: ${{ inputs.build_freebsd16_selfhosted }}
+    if: ${{ inputs.build_freebsd16_selfhosted && inputs.reuse_run_id == '' }}
     runs-on: [self-hosted, linux, freebsd-vm]
     # emulated on an x86 host: this can take a day or more
     timeout-minutes: 2880
@@ -110,22 +114,37 @@ jobs:
     name: Publish release
     needs: [build, build-freebsd16-selfhosted]
     # the self-hosted job is skipped when its input is unticked; a failure blocks the release
-    if: ${{ !cancelled() && inputs.publish && needs.build.result == 'success' && (needs.build-freebsd16-selfhosted.result == 'success' || needs.build-freebsd16-selfhosted.result == 'skipped') }}
+    if: ${{ !cancelled() && inputs.publish && (inputs.reuse_run_id != '' || (needs.build.result == 'success' && (needs.build-freebsd16-selfhosted.result == 'success' || needs.build-freebsd16-selfhosted.result == 'skipped'))) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read   # download artifacts of another run (reuse_run_id)
     steps:
       - uses: actions/download-artifact@v4
+        if: ${{ inputs.reuse_run_id == '' }}
         with:
           path: artifacts
+
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.reuse_run_id != '' }}
+        with:
+          path: artifacts
+          run-id: ${{ inputs.reuse_run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
 
       - name: Compute tag and check version consistency
         id: tag
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
+          REUSE_RUN_ID: ${{ inputs.reuse_run_id }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
+          if [ -n "${REUSE_RUN_ID:-}" ] && [ -z "$RELEASE_TAG" ]; then
+            echo "reuse_run_id needs release_tag" >&2; exit 1
+          fi
+          ls -l artifacts/*/
           # every build must have used the same package versions
           [ "$(cat artifacts/*/versions.txt | sort -u | wc -l)" -eq 3 ] || { echo "versions differ between builds" >&2; cat artifacts/*/versions.txt; exit 1; }
           if [ -n "$RELEASE_TAG" ]; then
