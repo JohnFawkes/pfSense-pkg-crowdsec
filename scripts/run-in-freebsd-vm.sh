@@ -35,7 +35,7 @@ if [ "$NATIVE" = 1 ]; then
   BOOT_TRIES=180      # 15 minutes
 else
   echo "guest $FBSD_ARCH on a $HOST_ARCH host without KVM: using slow TCG emulation" >&2
-  BOOT_TRIES=720      # 60 minutes
+  BOOT_TRIES=1440     # 2 hours: first boot also upgrades the base system, then reboots
 fi
 
 VM_CPUS=${VM_CPUS:-4}
@@ -78,6 +78,7 @@ COMMON_ARGS=(
   -drive "file=$WORK/disk.qcow2,if=virtio,format=qcow2"
   -drive "file=$WORK/seed.iso,media=cdrom,readonly=on"
   -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:$PORT-:22" -device virtio-net-pci,netdev=n0
+  -monitor "unix:$WORK/monitor,server,nowait"
   -daemonize -pidfile "$PIDFILE"
 )
 if [ "$FBSD_ARCH" = amd64 ]; then
@@ -95,9 +96,33 @@ SSH_OPTS=(-i "$WORK/key" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHost
           -o LogLevel=ERROR -o ConnectTimeout=5 -o ServerAliveInterval=30)
 vm() { ssh "${SSH_OPTS[@]}" root@127.0.0.1 "$@"; }
 
+# Snapshot images upgrade their base system (kernel included) from the package
+# repo on first boot, without rebooting. The mismatched kernel/userland makes
+# sshd crash ("Segmentation fault" in the sshd config check), so after the
+# upgrade has finished and the console shows the login prompt but ssh still
+# does not answer, reset the VM once: it then boots the new kernel and sshd starts.
+vm_monitor() {
+  printf '%s\n' "$1" | python3 -c '
+import socket, sys, time
+s = socket.socket(socket.AF_UNIX)
+s.connect(sys.argv[1])
+s.sendall(sys.stdin.buffer.read())
+time.sleep(1)
+' "$WORK/monitor"
+}
 echo "waiting for the VM to accept ssh ($((BOOT_TRIES * 5 / 60)) minutes at most)..."
-for _ in $(seq 1 "$BOOT_TRIES"); do
+reset_done=0
+login_seen=""
+for i in $(seq 1 "$BOOT_TRIES"); do
   vm true 2>/dev/null && break
+  if [ "$reset_done" = 0 ] && grep -q '(ttyu0)' "$WORK/console.log" 2>/dev/null; then
+    login_seen=${login_seen:-$i}
+    if [ $((i - login_seen)) -ge 12 ]; then
+      echo "VM is at the login prompt but ssh does not answer (first-boot upgrade): resetting it once"
+      vm_monitor system_reset
+      reset_done=1
+    fi
+  fi
   sleep 5
 done
 vm true || { echo "VM never became reachable; console log:" >&2; tail -n 60 "$WORK/console.log" >&2; exit 1; }
