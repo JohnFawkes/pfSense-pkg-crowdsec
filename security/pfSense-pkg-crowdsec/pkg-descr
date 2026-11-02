@@ -8,7 +8,7 @@ WWW: https://docs.crowdsec.net/docs/next/getting_started/install_crowdsec_pfsens
 Package Changelog
 =================
 
-0.1.9
+0.2.0
 
  * ship with crowdsec 1.8.2 and crowdsec-firewall-bouncer 0.0.38
  * require crowdsec 1.8.2 and crowdsec-firewall-bouncer 0.0.38_2

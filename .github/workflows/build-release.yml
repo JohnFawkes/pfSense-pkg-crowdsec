@@ -6,7 +6,7 @@ name: Build release archives
 # install-crowdsec.sh.
 #
 # Tag format: v<pfSense-pkg-crowdsec version>-<crowdsec version>-<bouncer build>
-# e.g. v0.1.9-1.8.2-38
+# e.g. v0.2.0-1.8.2-38
 
 on:
   workflow_dispatch:
