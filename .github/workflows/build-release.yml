@@ -80,7 +80,8 @@ jobs:
     name: FreeBSD 16.0 amd64 (self-hosted)
     if: ${{ inputs.build_freebsd16_selfhosted }}
     runs-on: [self-hosted, linux, freebsd-vm]
-    timeout-minutes: 360
+    # without KVM on the runner host the VM is emulated and the build takes hours
+    timeout-minutes: 720
     steps:
       - uses: actions/checkout@v4
 

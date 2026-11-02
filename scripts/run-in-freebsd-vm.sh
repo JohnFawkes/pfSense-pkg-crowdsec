@@ -8,7 +8,8 @@
 #                   default ~/FreeBSD-16.0-CURRENT-amd64-BASIC-CLOUDINIT-ufs.qcow2
 #                   or ~/FreeBSD-16.0-CURRENT-arm64-aarch64-BASIC-CLOUDINIT-ufs.qcow2
 #   FBSD_ARCH       amd64 (default) or aarch64. A guest that differs from the host
-#                   architecture runs under TCG emulation: very slow, needs a long timeout.
+#                   architecture, or any guest when /dev/kvm is unusable, runs under TCG
+#                   emulation: very slow, needs a long timeout.
 #   VM_CPUS, VM_MEM (MiB), VM_DISK  defaults: 4, 8192, 40G
 #   PORTS_REF EXPECTED_CROWDSEC FBSD_RELEASE FBSD_ARCH   passed through to the build
 set -euo pipefail
@@ -24,11 +25,16 @@ case "$FBSD_ARCH" in
 esac
 FREEBSD_IMAGE=${FREEBSD_IMAGE:-$DEFAULT_IMAGE}
 [ -r "$FREEBSD_IMAGE" ] || { echo "cannot read $FREEBSD_IMAGE" >&2; exit 1; }
+if [ "$NATIVE" = 1 ] && [ ! -w /dev/kvm ]; then
+  # no usable KVM (e.g. the runner is itself a VM without nested virtualization):
+  # carry on under emulation instead of failing, but say so loudly
+  echo "WARNING: /dev/kvm is missing or not writable by $(id -un); falling back to TCG emulation (several times slower)" >&2
+  NATIVE=0
+fi
 if [ "$NATIVE" = 1 ]; then
-  [ -w /dev/kvm ] || { echo "/dev/kvm is not writable by $(id -un) (add the user to the kvm group)" >&2; exit 1; }
   BOOT_TRIES=180      # 15 minutes
 else
-  echo "guest $FBSD_ARCH on a $HOST_ARCH host: using slow TCG emulation" >&2
+  echo "guest $FBSD_ARCH on a $HOST_ARCH host without KVM: using slow TCG emulation" >&2
   BOOT_TRIES=720      # 60 minutes
 fi
 
