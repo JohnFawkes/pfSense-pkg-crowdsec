@@ -34,6 +34,10 @@ on:
       reuse_run_id:
         description: "Skip the builds and publish the artifacts of this earlier run instead (needs release_tag)"
         default: ""
+      mark_release:
+        description: "With release_tag: turn that release from a pre-release into a normal 'latest' release right away"
+        type: boolean
+        default: false
       release_tag:
         description: "Attach the archives to this EXISTING release tag (e.g. v0.1.9-1.8.1-38) instead of computing one; its name and pre-release flag are left alone"
         default: ""
@@ -42,6 +46,22 @@ permissions:
   contents: read
 
 jobs:
+  release-meta:
+    name: Refresh the release notes${{ inputs.mark_release && ' and mark the release' || '' }}
+    if: ${{ inputs.release_tag != '' && inputs.publish }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update the release (archives table, pre-release flag)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          MARK: ${{ inputs.mark_release && '--mark-release' || '' }}
+        run: scripts/refresh-release.sh "${{ inputs.release_tag }}" $MARK
+
   build:
     name: FreeBSD ${{ matrix.release }} ${{ matrix.arch }}
     if: ${{ inputs.reuse_run_id == '' }}
@@ -151,6 +171,8 @@ jobs:
       contents: write
       actions: read   # download artifacts of another run (reuse_run_id)
     steps:
+      - uses: actions/checkout@v4   # for scripts/refresh-release.sh
+
       - uses: actions/download-artifact@v4
         if: ${{ inputs.reuse_run_id == '' }}
         with:
@@ -197,3 +219,10 @@ jobs:
           name: ${{ inputs.release_tag == '' && steps.tag.outputs.tag || '' }}
           prerelease: ${{ inputs.release_tag == '' && inputs.prerelease || '' }}
           files: artifacts/*/freebsd-*.tar
+
+      - name: Refresh the archives table of the release notes
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: scripts/refresh-release.sh "${{ inputs.release_tag }}"
