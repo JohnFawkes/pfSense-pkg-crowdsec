@@ -1,6 +1,6 @@
 name: Watch for new CrowdSec versions
 
-# Every few hours, compare the crowdsec / crowdsec-firewall-bouncer versions in
+# Once a day, compare the crowdsec / crowdsec-firewall-bouncer versions in
 # the FreeBSD ports tree (what the release archives are built from) with the
 # minimums this repo requires. When the ports are ahead, open a pull request that
 # bumps the package version, the minimums and the changelog. Merging that PR
@@ -12,7 +12,8 @@ name: Watch for new CrowdSec versions
 
 on:
   schedule:
-    - cron: "17 */6 * * *"
+    # 05:00 UTC = 12:00 am EST (1:00 am during daylight saving time): cron is UTC-only
+    - cron: "0 5 * * *"
   workflow_dispatch:
 
 permissions:
