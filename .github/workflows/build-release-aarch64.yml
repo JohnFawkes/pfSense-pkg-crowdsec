@@ -34,6 +34,10 @@ on:
       reuse_run_id:
         description: "Skip the builds and publish the artifacts of this earlier run instead (needs release_tag)"
         default: ""
+      only_freebsd16:
+        description: "Only build FreeBSD 16 aarch64 (skip the 14.3 and 15.0 builds); with release_tag its archive is attached on its own"
+        type: boolean
+        default: false
       mark_release:
         description: "With release_tag: turn that release from a pre-release into a normal 'latest' release right away"
         type: boolean
@@ -64,7 +68,7 @@ jobs:
 
   build:
     name: FreeBSD ${{ matrix.release }} ${{ matrix.arch }}
-    if: ${{ inputs.reuse_run_id == '' }}
+    if: ${{ inputs.reuse_run_id == '' && !inputs.only_freebsd16 }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
@@ -164,7 +168,7 @@ jobs:
     name: Publish release
     needs: [build, build-freebsd16]
     # the FreeBSD 16 job is skipped when freebsd16_runner is 'skip' or when reusing a run; a failure blocks the release
-    if: ${{ !cancelled() && inputs.publish && (inputs.reuse_run_id != '' || (needs.build.result == 'success' && (needs.build-freebsd16.result == 'success' || needs.build-freebsd16.result == 'skipped'))) }}
+    if: ${{ !cancelled() && inputs.publish && (inputs.reuse_run_id != '' || ((needs.build.result == 'success' || inputs.only_freebsd16) && (needs.build-freebsd16.result == 'success' || needs.build-freebsd16.result == 'skipped'))) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

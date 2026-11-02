@@ -77,7 +77,7 @@ COMMON_ARGS=(
   -display none -serial "file:$WORK/console.log"
   -drive "file=$WORK/disk.qcow2,if=virtio,format=qcow2"
   -drive "file=$WORK/seed.iso,media=cdrom,readonly=on"
-  -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:$PORT-:22" -device virtio-net-pci,netdev=n0
+  -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:$PORT-:22" -device virtio-net-pci,netdev=n0,romfile=
   -monitor "unix:$WORK/monitor,server,nowait"
   -daemonize -pidfile "$PIDFILE"
 )
