@@ -1,0 +1,52 @@
+name: Attach artifacts to a release
+
+# Attaches the freebsd-*.tar archives uploaded as artifacts by an earlier run of
+# build-release.yml / build-release-aarch64.yml to an EXISTING release, without
+# rebuilding anything. The release's name and pre-release flag are left alone.
+# Artifacts expire after 90 days.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "ID of the workflow run that produced the artifacts (the number in its URL)"
+        required: true
+      release_tag:
+        description: "Existing release tag to attach to (e.g. v0.1.9-1.8.1-38)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  attach:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ inputs.run_id }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Check the release exists
+        run: gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          run-id: ${{ inputs.run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+
+      - name: List what will be attached
+        run: |
+          set -eu
+          ls -l artifacts/*/
+          cat artifacts/*/versions.txt
+          ls artifacts/*/freebsd-*.tar
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: artifacts/*/freebsd-*.tar
