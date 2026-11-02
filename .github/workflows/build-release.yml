@@ -6,7 +6,7 @@ name: Build release archives
 # install-crowdsec.sh.
 #
 # Tag format: v<pfSense-pkg-crowdsec version>-<crowdsec version>-<bouncer build>
-# e.g. v0.1.8-1.8.1-34
+# e.g. v0.1.9-1.8.2-38
 
 on:
   workflow_dispatch:
@@ -110,6 +110,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4   # for scripts/release-notes.sh and the changelog
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -125,9 +127,16 @@ jobs:
           BN=${bouncer%%_*}; BN=${BN##*.}
           echo "tag=v${pfsense_pkg%%_*}-${crowdsec%%_*}-${BN}" >> "$GITHUB_OUTPUT"
 
+      - name: Write release notes
+        run: |
+          scripts/release-notes.sh "${{ steps.tag.outputs.tag }}" \
+            "$(ls artifacts/*/versions.txt | head -n 1)" artifacts > release-notes.md
+          cat release-notes.md
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
+          body_path: release-notes.md
           prerelease: ${{ inputs.prerelease }}
           files: artifacts/*/freebsd-*.tar
