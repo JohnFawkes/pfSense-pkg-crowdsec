@@ -14,6 +14,9 @@ on:
       release_tag:
         description: "Existing release tag to attach to (e.g. v0.1.9-1.8.1-38)"
         required: true
+      artifact_pattern:
+        description: "Only attach artifacts whose name matches this glob (e.g. freebsd-16.0-amd64); default all"
+        default: "*"
 
 permissions:
   contents: read
@@ -35,6 +38,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: ${{ inputs.artifact_pattern }}
           run-id: ${{ inputs.run_id }}
           repository: ${{ github.repository }}
           github-token: ${{ github.token }}

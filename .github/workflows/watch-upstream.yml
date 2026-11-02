@@ -1,0 +1,123 @@
+name: Watch for new CrowdSec versions
+
+# Every few hours, compare the crowdsec / crowdsec-firewall-bouncer versions in
+# the FreeBSD ports tree (what the release archives are built from) with the
+# minimums this repo requires. When the ports are ahead, open a pull request that
+# bumps the package version, the minimums and the changelog. Merging that PR
+# starts the release build (build-release.yml, push trigger), which publishes the
+# amd64 archives and then starts the aarch64 build.
+#
+# Needs: Settings -> Actions -> General -> "Allow GitHub Actions to create and
+# approve pull requests". Without it the workflow opens an issue instead.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: watch-upstream
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Compare ports versions with this repo
+        id: check
+        run: ./scripts/check-upstream.sh | tee -a "$GITHUB_OUTPUT"
+
+      - name: Open a bump pull request
+        if: ${{ steps.check.outputs.needs_bump == 'true' }}
+        env:
+          CS: ${{ steps.check.outputs.cs_ports }}
+          BN: ${{ steps.check.outputs.bn_ports }}
+          PKG: ${{ steps.check.outputs.pkg_new }}
+          SECURITY: ${{ steps.check.outputs.security_ids }}
+        run: |
+          set -eu
+          branch="auto/crowdsec-$CS-bouncer-$BN"
+          # one PR per version pair, whatever its state
+          if [ -n "$(gh pr list --head "$branch" --state all --json number --jq '.[].number')" ]; then
+            echo "a pull request for $branch already exists"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          ./scripts/check-upstream.sh --apply > /dev/null
+          git add -A
+          git commit -m "release: pfSense-pkg-crowdsec $PKG for crowdsec $CS, bouncer $BN"
+          git push origin "$branch"
+
+          title="release: pfSense-pkg-crowdsec $PKG for crowdsec $CS, bouncer $BN"
+          body="The FreeBSD ports tree now has crowdsec **$CS** and crowdsec-firewall-bouncer **$BN**.
+
+          - package version -> **$PKG** (a new crowdsec major/minor bumps the package minor, otherwise its patch level; edit if you want a different number)
+          - minimum \`crowdsec\` and \`crowdsec-firewall-bouncer\` versions raised to match
+          - changelog entry added to \`pkg-descr\`
+
+          Merging this starts the release build: FreeBSD 14, 15 and 16 on amd64, published as a pre-release, then the aarch64 builds are attached."
+          labels=automated
+          if [ -n "$SECURITY" ]; then
+            labels="$labels,security"
+            body="$body
+
+          **Security:** the upstream release notes mention $SECURITY."
+          fi
+          gh label create automated --color ededed --description "opened by a workflow" 2> /dev/null || true
+          gh label create security --color d73a4a --description "contains security fixes" 2> /dev/null || true
+          if ! gh pr create --base main --head "$branch" --title "$title" --body "$body" --label "$labels"; then
+            gh issue create --title "New CrowdSec versions in the ports tree: $CS / $BN" \
+              --body "The ports tree has crowdsec $CS and bouncer $BN, and the branch \`$branch\` with the bump is pushed, but the workflow is not allowed to open a pull request (Settings -> Actions -> General -> allow GitHub Actions to create and approve pull requests). Open one from that branch." \
+              --label automated
+          fi
+
+      - name: Flag a bump that has been waiting too long
+        if: ${{ steps.check.outputs.needs_bump == 'true' }}
+        env:
+          CS: ${{ steps.check.outputs.cs_ports }}
+          BN: ${{ steps.check.outputs.bn_ports }}
+        run: |
+          set -eu
+          branch="auto/crowdsec-$CS-bouncer-$BN"
+          created=$(gh pr list --head "$branch" --state open --json createdAt --jq '.[0].createdAt // empty')
+          [ -n "$created" ] || exit 0
+          age_days=$(( ( $(date +%s) - $(date -d "$created" +%s) ) / 86400 ))
+          [ "$age_days" -ge 7 ] || exit 0
+          title="Stale: crowdsec $CS / bouncer $BN bump has been open for $age_days days"
+          if [ -z "$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[].number')" ]; then
+            gh issue create --title "$title" --label automated \
+              --body "The pull request from \`$branch\` has been open since $created. Merge it to build the release, or close it."
+          fi
+
+  report-failure:
+    needs: watch
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open (or update) an issue about the failed check
+        run: |
+          set -eu
+          title="The CrowdSec version watcher is failing"
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh label create automated --color ededed --description "opened by a workflow" --repo "$GITHUB_REPOSITORY" 2> /dev/null || true
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "Failed again: $url"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label automated \
+              --body "The scheduled check for new CrowdSec versions failed: $url"
+          fi

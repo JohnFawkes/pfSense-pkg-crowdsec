@@ -21,3 +21,14 @@ Three types of configuration are supported:
   to be processed.
 
 (*) If you are already using a Blocklist Mirror, this replaces it while being faster and not requiring pfBlockerNG.
+
+## How releases are made
+
+Releases are built by GitHub Actions from the FreeBSD ports tree (`security/crowdsec`, `security/crowdsec-firewall-bouncer`) plus this repository's `pfSense-pkg-crowdsec`.
+
+1. **`watch-upstream.yml`** runs every six hours. When the ports tree has a newer CrowdSec or firewall bouncer than the minimums in `security/pfSense-pkg-crowdsec/Makefile`, it opens a pull request that bumps `PORTVERSION`, the minimum versions and the changelog (and labels it `security` if the upstream release notes mention GHSA/CVE ids). It opens an issue if the check itself keeps failing or a bump pull request is left open for a week.
+2. Merging that pull request starts **`build-release.yml`**: FreeBSD 14, 15 and 16 on amd64, published as a pre-release `v<package>-<crowdsec>-<bouncer build>` with generated release notes.
+3. When the release exists, it starts **`build-release-aarch64.yml`** (emulated, several hours), which attaches the aarch64 archives to the same release.
+4. Promote the pre-release to a normal release when you have tested it.
+
+Both build workflows can also be run by hand from the Actions tab. The repository setting *Actions → General → Allow GitHub Actions to create and approve pull requests* must be on for step 1.
