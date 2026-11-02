@@ -115,7 +115,11 @@ jobs:
           f=FreeBSD-16.0-CURRENT-amd64-BASIC-CLOUDINIT-ufs.qcow2.xz
           curl -fL --retry 3 -o "$IMG.xz" "$base/$f"
           curl -fL --retry 3 -o "$RUNNER_TEMP/CHECKSUM.SHA256" "$base/CHECKSUM.SHA256"
-          expected=$(grep "($f)" "$RUNNER_TEMP/CHECKSUM.SHA256" | sed 's/.*= //')
+          # the checksum file lists the dated names (e.g. ...CLOUDINIT-20261102-<rev>-ufs.qcow2.xz),
+          # while Latest/ serves the undated name: match the one UFS qcow2 cloud-init line
+          line=$(grep -E 'BASIC-CLOUDINIT-.*-ufs\.qcow2\.xz\)' "$RUNNER_TEMP/CHECKSUM.SHA256")
+          [ "$(printf '%s\n' "$line" | wc -l)" -eq 1 ] || { echo "expected exactly one checksum line, got: $line" >&2; exit 1; }
+          expected=${line##*= }
           echo "$expected  $IMG.xz" | sha256sum -c -
           xz -d "$IMG.xz"
 
