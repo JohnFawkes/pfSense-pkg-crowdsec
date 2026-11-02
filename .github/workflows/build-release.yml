@@ -7,8 +7,19 @@ name: Build release archives
 #
 # Tag format: v<pfSense-pkg-crowdsec version>-<crowdsec version>-<bouncer build>
 # e.g. v0.2.0-1.8.2-38
+#
+# Triggers:
+#   - push to main that touches the package Makefile (this is how the pull
+#     requests opened by watch-upstream.yml start a release): builds with the
+#     defaults below, publishes a pre-release, then starts the aarch64 builds.
+#     Skipped when a release for that package version already exists.
+#   - manual run, with the inputs below.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - security/pfSense-pkg-crowdsec/Makefile
   workflow_dispatch:
     inputs:
       ports_ref:
@@ -16,7 +27,7 @@ on:
         default: "main"
       expected_crowdsec_version:
         description: "Fail if the ports tree does not provide this crowdsec version (empty = don't check)"
-        default: "1.8.1"
+        default: ""
       prerelease:
         description: "Publish as a pre-release"
         type: boolean
@@ -26,6 +37,10 @@ on:
         type: choice
         options: [hosted, self-hosted, skip]
         default: hosted
+      with_aarch64:
+        description: "After publishing, start build-release-aarch64.yml and attach its archives to the release"
+        type: boolean
+        default: false
       publish:
         description: "Create the GitHub release (otherwise only upload workflow artifacts)"
         type: boolean
@@ -35,8 +50,64 @@ permissions:
   contents: read
 
 jobs:
+  prepare:
+    name: Plan the build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      skip: ${{ steps.p.outputs.skip }}
+      ports_ref: ${{ steps.p.outputs.ports_ref }}
+      expected: ${{ steps.p.outputs.expected }}
+      prerelease: ${{ steps.p.outputs.prerelease }}
+      runner: ${{ steps.p.outputs.runner }}
+      publish: ${{ steps.p.outputs.publish }}
+      aarch64: ${{ steps.p.outputs.aarch64 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: p
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_PORTS_REF: ${{ inputs.ports_ref }}
+          IN_EXPECTED: ${{ inputs.expected_crowdsec_version }}
+          IN_PRERELEASE: ${{ inputs.prerelease }}
+          IN_RUNNER: ${{ inputs.freebsd16_runner }}
+          IN_PUBLISH: ${{ inputs.publish }}
+          IN_AARCH64: ${{ inputs.with_aarch64 }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mk=security/pfSense-pkg-crowdsec/Makefile
+          cs_min=$(sed -n 's/.*[[:space:]=]crowdsec>=\([^:]*\):.*/\1/p' "$mk" | head -n1)
+          pkg=$(sed -n 's/^PORTVERSION=[[:space:]]*//p' "$mk")
+          skip=false
+          if [ "$EVENT" = workflow_dispatch ]; then
+            ports_ref=$IN_PORTS_REF; expected=$IN_EXPECTED; prerelease=$IN_PRERELEASE
+            runner=$IN_RUNNER; publish=$IN_PUBLISH; aarch64=$IN_AARCH64
+          else
+            ports_ref=main; expected=${cs_min%%_*}; prerelease=true
+            runner=hosted; publish=true; aarch64=true
+            # a push that did not bump the package version builds nothing
+            if gh release list --limit 200 --json tagName --jq '.[].tagName' | grep -q "^v${pkg}-"; then
+              echo "a release for package version $pkg already exists: nothing to build"
+              skip=true
+            fi
+          fi
+          {
+            echo "skip=$skip"
+            echo "ports_ref=$ports_ref"
+            echo "expected=$expected"
+            echo "prerelease=$prerelease"
+            echo "runner=$runner"
+            echo "publish=$publish"
+            echo "aarch64=$aarch64"
+          } | tee -a "$GITHUB_OUTPUT"
+
   build:
     name: FreeBSD ${{ matrix.release }} ${{ matrix.arch }}
+    needs: prepare
+    if: ${{ needs.prepare.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
@@ -56,8 +127,8 @@ jobs:
       - name: Build packages in FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         env:
-          PORTS_REF: ${{ inputs.ports_ref }}
-          EXPECTED_CROWDSEC: ${{ inputs.expected_crowdsec_version }}
+          PORTS_REF: ${{ needs.prepare.outputs.ports_ref }}
+          EXPECTED_CROWDSEC: ${{ needs.prepare.outputs.expected }}
           FBSD_RELEASE: ${{ matrix.release }}
           FBSD_ARCH: ${{ matrix.arch }}
         with:
@@ -78,9 +149,10 @@ jobs:
           if-no-files-found: error
 
   build-freebsd16:
-    name: FreeBSD 16.0 amd64 (${{ inputs.freebsd16_runner }})
-    if: ${{ inputs.freebsd16_runner != 'skip' }}
-    runs-on: ${{ inputs.freebsd16_runner == 'self-hosted' && fromJSON('["self-hosted","linux","freebsd-vm"]') || 'ubuntu-latest' }}
+    name: FreeBSD 16.0 amd64 (${{ needs.prepare.outputs.runner }})
+    needs: prepare
+    if: ${{ needs.prepare.outputs.skip != 'true' && needs.prepare.outputs.runner != 'skip' }}
+    runs-on: ${{ needs.prepare.outputs.runner == 'self-hosted' && fromJSON('["self-hosted","linux","freebsd-vm"]') || 'ubuntu-latest' }}
     # emulated (no KVM on a self-hosted host) this takes hours; GitHub-hosted jobs stop at 6h
     timeout-minutes: 360
     steps:
@@ -126,8 +198,8 @@ jobs:
       - name: Build packages in a QEMU FreeBSD 16 VM
         env:
           FREEBSD_IMAGE: ${{ runner.environment == 'github-hosted' && '/mnt/vm/freebsd16.qcow2' || vars.FREEBSD16_IMAGE }}
-          PORTS_REF: ${{ inputs.ports_ref }}
-          EXPECTED_CROWDSEC: ${{ inputs.expected_crowdsec_version }}
+          PORTS_REF: ${{ needs.prepare.outputs.ports_ref }}
+          EXPECTED_CROWDSEC: ${{ needs.prepare.outputs.expected }}
           FBSD_RELEASE: "16.0"
           FBSD_ARCH: amd64
         run: |
@@ -142,12 +214,14 @@ jobs:
 
   release:
     name: Publish release
-    needs: [build, build-freebsd16]
+    needs: [prepare, build, build-freebsd16]
     # the FreeBSD 16 job is skipped when freebsd16_runner is 'skip'; a failure blocks the release
-    if: ${{ !cancelled() && inputs.publish && needs.build.result == 'success' && (needs.build-freebsd16.result == 'success' || needs.build-freebsd16.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.prepare.outputs.skip != 'true' && needs.prepare.outputs.publish == 'true' && needs.build.result == 'success' && (needs.build-freebsd16.result == 'success' || needs.build-freebsd16.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4   # for scripts/release-notes.sh and the changelog
 
@@ -177,5 +251,43 @@ jobs:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
           body_path: release-notes.md
-          prerelease: ${{ inputs.prerelease }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
           files: artifacts/*/freebsd-*.tar
+
+  aarch64:
+    name: Start the aarch64 builds
+    needs: [prepare, release]
+    if: ${{ needs.release.result == 'success' && needs.prepare.outputs.aarch64 == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch build-release-aarch64.yml for the new release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run build-release-aarch64.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" \
+            -f release_tag="${{ needs.release.outputs.tag }}" \
+            -f ports_ref="${{ needs.prepare.outputs.ports_ref }}" \
+            -f expected_crowdsec_version="${{ needs.prepare.outputs.expected }}" \
+            -f freebsd16_runner=hosted \
+            -f publish=true
+
+  notify-failure:
+    name: Report a failed automatic build
+    needs: [prepare, build, build-freebsd16, release]
+    if: ${{ failure() && github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh label create automated --color ededed --description "opened by a workflow" --repo "$GITHUB_REPOSITORY" 2> /dev/null || true
+          gh issue create --repo "$GITHUB_REPOSITORY" --label automated \
+            --title "The automatic release build failed ($GITHUB_SHA)" \
+            --body "The release build started by the push to main failed: $url. Fix the cause and re-run it from the Actions tab (Build release archives, Run workflow)."
