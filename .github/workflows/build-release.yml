@@ -21,10 +21,11 @@ on:
         description: "Publish as a pre-release"
         type: boolean
         default: true
-      build_freebsd16_selfhosted:
-        description: "Also build FreeBSD 16 amd64 on the self-hosted runner (label: freebsd-vm). Untick if the runner is offline."
-        type: boolean
-        default: true
+      freebsd16_runner:
+        description: "Where to build FreeBSD 16 amd64: a GitHub-hosted runner (KVM), your self-hosted runner (label freebsd-vm), or not at all"
+        type: choice
+        options: [hosted, self-hosted, skip]
+        default: hosted
       publish:
         description: "Create the GitHub release (otherwise only upload workflow artifacts)"
         type: boolean
@@ -43,7 +44,7 @@ jobs:
       matrix:
         include:
           # vmactions/freebsd-vm has no FreeBSD 16 image, so 16 is built by the
-          # self-hosted job below. aarch64 lives in build-release-aarch64.yml
+          # FreeBSD 16 job below. aarch64 lives in build-release-aarch64.yml
           # (emulated, slow); armv7 is not built.
           - release: "15.0"
             arch: amd64
@@ -76,25 +77,58 @@ jobs:
           path: out/
           if-no-files-found: error
 
-  build-freebsd16-selfhosted:
-    name: FreeBSD 16.0 amd64 (self-hosted)
-    if: ${{ inputs.build_freebsd16_selfhosted }}
-    runs-on: [self-hosted, linux, freebsd-vm]
-    # without KVM on the runner host the VM is emulated and the build takes hours
-    timeout-minutes: 720
+  build-freebsd16:
+    name: FreeBSD 16.0 amd64 (${{ inputs.freebsd16_runner }})
+    if: ${{ inputs.freebsd16_runner != 'skip' }}
+    runs-on: ${{ inputs.freebsd16_runner == 'self-hosted' && fromJSON('["self-hosted","linux","freebsd-vm"]') || 'ubuntu-latest' }}
+    # emulated (no KVM on a self-hosted host) this takes hours; GitHub-hosted jobs stop at 6h
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
 
+      - name: Prepare the GitHub-hosted runner (QEMU, KVM, scratch disk)
+        if: ${{ runner.environment == 'github-hosted' }}
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils genisoimage xz-utils
+          # let the runner user open /dev/kvm
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          # fail fast instead of silently falling back to a many-hour emulated build
+          ls -l /dev/kvm || { echo "no /dev/kvm on this runner" >&2; exit 1; }
+          # the VM image and its overlay are big: keep them on the large /mnt disk
+          sudo mkdir -p /mnt/vm
+          sudo chown "$USER" /mnt/vm
+          df -h / /mnt
+
+      - name: Get the FreeBSD 16 VM image
+        env:
+          # self-hosted: optional repository variable, otherwise ~/FreeBSD-16.0-CURRENT-amd64-BASIC-CLOUDINIT-ufs.qcow2
+          FREEBSD_IMAGE: ${{ runner.environment == 'github-hosted' && '/mnt/vm/freebsd16.qcow2' || vars.FREEBSD16_IMAGE }}
+        run: |
+          set -eu
+          IMG=${FREEBSD_IMAGE:-$HOME/FreeBSD-16.0-CURRENT-amd64-BASIC-CLOUDINIT-ufs.qcow2}
+          if [ -e "$IMG" ]; then echo "using existing $IMG"; exit 0; fi
+          base=https://download.freebsd.org/snapshots/VM-IMAGES/16.0-CURRENT/amd64/Latest
+          f=FreeBSD-16.0-CURRENT-amd64-BASIC-CLOUDINIT-ufs.qcow2.xz
+          curl -fL --retry 3 -o "$IMG.xz" "$base/$f"
+          curl -fL --retry 3 -o "$RUNNER_TEMP/CHECKSUM.SHA256" "$base/CHECKSUM.SHA256"
+          expected=$(grep "($f)" "$RUNNER_TEMP/CHECKSUM.SHA256" | sed 's/.*= //')
+          echo "$expected  $IMG.xz" | sha256sum -c -
+          xz -d "$IMG.xz"
+
       - name: Build packages in a QEMU FreeBSD 16 VM
         env:
-          # Optional repository variables; the script defaults to
-          # ~/FreeBSD-16.0-CURRENT-amd64-BASIC-CLOUDINIT-ufs.qcow2.
-          FREEBSD_IMAGE: ${{ vars.FREEBSD16_IMAGE }}
+          FREEBSD_IMAGE: ${{ runner.environment == 'github-hosted' && '/mnt/vm/freebsd16.qcow2' || vars.FREEBSD16_IMAGE }}
           PORTS_REF: ${{ inputs.ports_ref }}
           EXPECTED_CROWDSEC: ${{ inputs.expected_crowdsec_version }}
           FBSD_RELEASE: "16.0"
           FBSD_ARCH: amd64
-        run: scripts/run-in-freebsd-vm.sh
+        run: |
+          if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then export TMPDIR=/mnt/vm; fi
+          scripts/run-in-freebsd-vm.sh
 
       - uses: actions/upload-artifact@v4
         with:
@@ -104,9 +138,9 @@ jobs:
 
   release:
     name: Publish release
-    needs: [build, build-freebsd16-selfhosted]
-    # the self-hosted job is skipped when its input is unticked; a failure blocks the release
-    if: ${{ !cancelled() && inputs.publish && needs.build.result == 'success' && (needs.build-freebsd16-selfhosted.result == 'success' || needs.build-freebsd16-selfhosted.result == 'skipped') }}
+    needs: [build, build-freebsd16]
+    # the FreeBSD 16 job is skipped when freebsd16_runner is 'skip'; a failure blocks the release
+    if: ${{ !cancelled() && inputs.publish && needs.build.result == 'success' && (needs.build-freebsd16.result == 'success' || needs.build-freebsd16.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
