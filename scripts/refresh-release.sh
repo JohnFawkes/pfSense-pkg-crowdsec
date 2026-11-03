@@ -15,10 +15,11 @@ mark=0
 [ "${2:-}" = "--mark-release" ] && mark=1
 
 if [ -n "${FAKE_RELEASE_DIR:-}" ]; then
-  body=$(cat "$FAKE_RELEASE_DIR/body.md")
+  body=$(tr -d '\r' < "$FAKE_RELEASE_DIR/body.md")
   assets=$(cat "$FAKE_RELEASE_DIR/assets.txt")
 else
-  body=$(gh release view "$tag" --json body --jq .body)
+  # notes edited in the GitHub web UI come back with CRLF line endings
+  body=$(gh release view "$tag" --json body --jq .body | tr -d '\r')
   assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
 fi
 
