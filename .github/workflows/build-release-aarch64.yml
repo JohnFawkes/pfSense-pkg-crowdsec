@@ -5,7 +5,8 @@ name: Build release archives (aarch64, slow)
 # Kept in its own workflow so the normal amd64 release is not held up by it.
 #
 # build-release.yml starts this automatically after publishing a release and
-# passes that release's tag as `release_tag`, so the archives are attached to it.
+# passes that release's tag as `release_tag`: each build then attaches its own
+# archive to that release as soon as it finishes.
 # Without `release_tag`, the tag is computed like build-release.yml does
 # (v<pkg>-<crowdsec>-<bouncer build>) and the release is created if needed.
 
@@ -71,6 +72,8 @@ jobs:
     if: ${{ inputs.reuse_run_id == '' && !inputs.only_freebsd16 }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -106,12 +109,31 @@ jobs:
           path: out/
           if-no-files-found: error
 
+      # with release_tag, every build attaches its own archive as soon as it is
+      # done, instead of waiting for the slowest one
+      - name: Attach this archive to the release
+        if: ${{ inputs.release_tag != '' && inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -eu
+          . out/versions.txt
+          BN=${bouncer%%_*}; BN=${BN##*.}
+          built="v${pfsense_pkg%%_*}-${crowdsec%%_*}-${BN}"
+          [ "$built" = "$TAG" ] || { echo "built $built, but the release is $TAG: not attaching" >&2; exit 1; }
+          gh release upload "$TAG" out/freebsd-*.tar --clobber
+          scripts/refresh-release.sh "$TAG"
+
   build-freebsd16:
     name: FreeBSD 16.0 aarch64 (${{ inputs.freebsd16_runner }})
     if: ${{ inputs.freebsd16_runner != 'skip' && inputs.reuse_run_id == '' }}
     runs-on: ${{ inputs.freebsd16_runner == 'self-hosted' && fromJSON('["self-hosted","linux","freebsd-vm"]') || 'ubuntu-latest' }}
     # emulated: about 3 hours on a 4-core runner; GitHub-hosted jobs stop at 6h
     timeout-minutes: 360
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -164,11 +186,30 @@ jobs:
           path: out/
           if-no-files-found: error
 
+      # with release_tag, every build attaches its own archive as soon as it is
+      # done, instead of waiting for the slowest one
+      - name: Attach this archive to the release
+        if: ${{ inputs.release_tag != '' && inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -eu
+          . out/versions.txt
+          BN=${bouncer%%_*}; BN=${BN##*.}
+          built="v${pfsense_pkg%%_*}-${crowdsec%%_*}-${BN}"
+          [ "$built" = "$TAG" ] || { echo "built $built, but the release is $TAG: not attaching" >&2; exit 1; }
+          gh release upload "$TAG" out/freebsd-*.tar --clobber
+          scripts/refresh-release.sh "$TAG"
+
   release:
     name: Publish release
     needs: [build, build-freebsd16]
     # the FreeBSD 16 job is skipped when freebsd16_runner is 'skip' or when reusing a run; a failure blocks the release
-    if: ${{ !cancelled() && inputs.publish && (inputs.reuse_run_id != '' || ((needs.build.result == 'success' || inputs.only_freebsd16) && (needs.build-freebsd16.result == 'success' || needs.build-freebsd16.result == 'skipped'))) }}
+    # with release_tag the build jobs attach their own archives; this job then only
+    # handles reuse_run_id, or runs without release_tag (computes the tag itself)
+    if: ${{ !cancelled() && inputs.publish && (inputs.release_tag == '' || inputs.reuse_run_id != '') && (inputs.reuse_run_id != '' || ((needs.build.result == 'success' || inputs.only_freebsd16) && (needs.build-freebsd16.result == 'success' || needs.build-freebsd16.result == 'skipped'))) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -225,6 +266,22 @@ jobs:
 
       - name: Refresh the archives table of the release notes
         if: ${{ inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: scripts/refresh-release.sh "${{ inputs.release_tag }}"
+
+  refresh-notes:
+    name: Refresh the release notes after all builds
+    needs: [build, build-freebsd16]
+    if: ${{ !cancelled() && inputs.publish && inputs.release_tag != '' && inputs.reuse_run_id == '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rewrite the archives table from the attached assets
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
