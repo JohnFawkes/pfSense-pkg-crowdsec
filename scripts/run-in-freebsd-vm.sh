@@ -77,7 +77,7 @@ COMMON_ARGS=(
   -display none -serial "file:$WORK/console.log"
   -drive "file=$WORK/disk.qcow2,if=virtio,format=qcow2"
   -drive "file=$WORK/seed.iso,media=cdrom,readonly=on"
-  -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:$PORT-:22" -device virtio-net-pci,netdev=n0
+  -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:$PORT-:22" -device virtio-net-pci,netdev=n0,romfile=
   -monitor "unix:$WORK/monitor,server,nowait"
   -daemonize -pidfile "$PIDFILE"
 )
@@ -93,7 +93,10 @@ else
 fi
 
 SSH_OPTS=(-i "$WORK/key" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-          -o LogLevel=ERROR -o ConnectTimeout=5 -o ServerAliveInterval=30)
+          -o LogLevel=ERROR -o ConnectTimeout=5 -o ServerAliveInterval=30
+          # an emulated guest can stall for minutes under load (e.g. pkg add):
+          # tolerate 20 missed keepalives (10 min) before giving up on the session
+          -o ServerAliveCountMax=20)
 vm() { ssh "${SSH_OPTS[@]}" root@127.0.0.1 "$@"; }
 
 # Snapshot images upgrade their base system (kernel included) from the package
@@ -130,8 +133,12 @@ vm 'freebsd-version; uname -a'
 
 # ship the repository, build, bring ./out back
 tar -C "$REPO" --exclude=.git -cf - . | vm 'rm -rf /root/work && mkdir -p /root/work && tar -C /root/work -xf -'
-vm "cd /root/work && env PORTS_REF='${PORTS_REF:-main}' EXPECTED_CROWDSEC='${EXPECTED_CROWDSEC:-}' \
-  FBSD_RELEASE='${FBSD_RELEASE:?}' FBSD_ARCH='$FBSD_ARCH' sh scripts/build-packages.sh"
+if ! vm "cd /root/work && env PORTS_REF='${PORTS_REF:-main}' EXPECTED_CROWDSEC='${EXPECTED_CROWDSEC:-}' \
+  FBSD_RELEASE='${FBSD_RELEASE:?}' FBSD_ARCH='$FBSD_ARCH' sh scripts/build-packages.sh"; then
+  echo "build in the VM failed (or the ssh session to it was lost); end of the console log:" >&2
+  tail -n 80 "$WORK/console.log" >&2
+  exit 1
+fi
 mkdir -p "$REPO/out"
 vm 'tar -C /root/work/out -cf - .' | tar -C "$REPO/out" -xf -
 ls -l "$REPO/out"
