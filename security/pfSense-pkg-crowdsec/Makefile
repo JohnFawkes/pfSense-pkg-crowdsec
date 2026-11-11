@@ -1,7 +1,7 @@
 # $FreeBSD$
 
 PORTNAME=	pfSense-pkg-crowdsec
-PORTVERSION=	0.2.0
+PORTVERSION=	0.2.1
 CATEGORIES=	security
 MASTER_SITES=	# empty
 DISTFILES=	# empty
@@ -12,8 +12,8 @@ COMMENT=	Crowdsec package for pfSense
 
 LICENSE=	APACHE20
 
-RUN_DEPENDS=	crowdsec>=1.8.2:security/crowdsec \
-		crowdsec-firewall-bouncer>=0.0.38_2:security/crowdsec-firewall-bouncer
+RUN_DEPENDS=	crowdsec>=1.8.2_1:security/crowdsec \
+		crowdsec-firewall-bouncer>=0.0.38_3:security/crowdsec-firewall-bouncer
 
 NO_BUILD=	yes
 NO_MTREE=	yes
